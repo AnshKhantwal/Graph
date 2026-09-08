@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>MEDCROSS Training Dashboard</title>
+<link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+<header>
+  <h1>MEDCROSS Training &amp; Development Dashboard</h1>
+  <div id="status" class="status">Loading data…</div>
+</header>
+
+<section class="controls">
+  <div class="field">
+    <label for="viewMode">View by</label>
+    <select id="viewMode">
+      <option value="center">Center</option>
+      <option value="designation">Designation</option>
+      <option value="person">Person</option>
+    </select>
+  </div>
+
+  <div class="field">
+    <label for="personFilter">Person</label>
+    <select id="personFilter"><option value="">All people</option></select>
+  </div>
+
+  <div class="field">
+    <label for="centerFilter">Center</label>
+    <select id="centerFilter"><option value="">All centers</option></select>
+  </div>
+
+  <div class="field">
+    <label for="designationFilter">Designation</label>
+    <select id="designationFilter"><option value="">All designations</option></select>
+  </div>
+
+  <div class="field">
+    <label for="topicFilter">Training topic</label>
+    <select id="topicFilter"><option value="">All topics</option></select>
+  </div>
+
+  <div class="field">
+    <label for="typeFilter">Type of training</label>
+    <select id="typeFilter"><option value="">All types</option></select>
+  </div>
+
+  <div class="field">
+    <label for="attendanceFilter">Attendance</label>
+    <select id="attendanceFilter">
+      <option value="">All</option>
+      <option value="Present">Present</option>
+      <option value="Absent">Absent</option>
+    </select>
+  </div>
+
+  <div class="field">
+    <label for="fromDate">From</label>
+    <input type="date" id="fromDate" />
+  </div>
+  <div class="field">
+    <label for="toDate">To</label>
+    <input type="date" id="toDate" />
+  </div>
+
+  <button id="resetBtn" type="button">Reset filters</button>
+  <button id="refreshBtn" type="button">Refresh</button>
+</section>
+
+<section class="kpis">
+  <div class="kpi"><span id="kpiRecords">0</span><small>Records</small></div>
+  <div class="kpi"><span id="kpiPeople">0</span><small>People</small></div>
+  <div class="kpi"><span id="kpiSessions">0</span><small>Distinct sessions</small></div>
+  <div class="kpi"><span id="kpiPresent">0</span><small>Present</small></div>
+</section>
+
+<section class="chart-wrap">
+  <h2 id="chartTitle">Attendance by center</h2>
+  <canvas id="mainChart"></canvas>
+</section>
+
+<section class="person-wrap" id="personPanel" hidden>
+  <h2>Person profile — <span id="personName"></span></h2>
+  <div class="kpis">
+    <div class="kpi"><span id="pTrainings">0</span><small>Sessions attended</small></div>
+    <div class="kpi"><span id="pTopics">0</span><small>Distinct topics</small></div>
+    <div class="kpi"><span id="pRate">0%</span><small>Present rate</small></div>
+    <div class="kpi"><span id="pCenters">–</span><small>Center(s)</small></div>
+  </div>
+  <canvas id="personChart"></canvas>
+</section>
+
+<section class="chart-wrap">
+  <h2>Sessions over time</h2>
+  <canvas id="timeChart"></canvas>
+</section>
+
+<section class="table-wrap">
+  <h2>Attendance detail <small id="tableCount"></small></h2>
+  <p class="hint">Who attended which training session and when — filtered by your selections above.</p>
+  <div class="table-scroll">
+    <table id="detailTable">
+      <thead>
+        <tr>
+          <th data-key="date">Date</th>
+          <th data-key="name">Name</th>
+          <th data-key="center">Center</th>
+          <th data-key="designation">Designation</th>
+          <th data-key="topic">Training topic</th>
+          <th data-key="type">Type</th>
+          <th data-key="mode">Mode</th>
+          <th data-key="attendance">Attendance</th>
+        </tr>
+      </thead>
+      <tbody></tbody>
+    </table>
+  </div>
+</section>
+
+<footer>
+  <span>Source: Google Sheet (Forms responses). Data is read live from the published sheet.</span>
+</footer>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
