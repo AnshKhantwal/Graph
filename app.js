@@ -167,7 +167,285 @@ function render() {
   if (personMode) renderPersonPanel(rows);
   else renderMainChart(rows);
   renderTimeChart(rows);
+  renderPeopleCharts(rows);
+  renderAttendanceCenterChart(rows);
+  renderTypeChart(rows);
+  renderModeChart(rows);
+  renderTopicsChart(rows);
+  renderMatrix(rows);
   renderTable(rows);
+}
+
+const CHARTS = {};
+function draw(id, config) {
+  CHARTS[id] && CHARTS[id].destroy();
+  CHARTS[id] = new Chart($(id), config);
+}
+const barOpts = (extra = {}, recordsFor = null) => {
+  const o = {
+    responsive: true,
+    scales: {
+      x: { ticks: { color: TICK }, grid: { color: GRID }, ...(extra.x || {}) },
+      y: { ticks: { color: TICK }, grid: { color: GRID }, beginAtZero: true, ...(extra.y || {}) },
+    },
+    plugins: { legend: { labels: { color: LABEL } }, ...(extra.plugins || {}) },
+    ...(extra.root || {}),
+  };
+  return recordsFor ? withPeopleTip(o, recordsFor) : o;
+};
+
+function distinctPeopleBy(rows, key) {
+  const m = new Map();
+  rows.forEach((r) => {
+    const k = r[key] || "(blank)";
+    if (!m.has(k)) m.set(k, new Set());
+    m.get(k).add(r.name.toLowerCase());
+  });
+  return m;
+}
+
+const byField = (rows, key, label) => rows.filter((r) => (r[key] || "(blank)") === label);
+
+function renderPeopleCharts(rows) {
+  [["peopleCenterChart", "center"], ["peopleDesigChart", "designation"]].forEach(([id, key]) => {
+    const m = distinctPeopleBy(rows, key);
+    const labels = [...m.keys()].sort((a, b) => m.get(b).size - m.get(a).size);
+    draw(id, {
+      type: "bar",
+      data: {
+        labels,
+        datasets: [{ label: "People", data: labels.map((l) => m.get(l).size), backgroundColor: PALETTE[key === "center" ? 0 : 1] }],
+      },
+      options: barOpts({
+        plugins: { legend: { display: false } },
+      }, (ds, i) => ({
+        title: `${key === "center" ? "Centre" : "Designation"}: ${labels[i]}`,
+        records: byField(rows, key, labels[i]),
+      })),
+    });
+  });
+}
+
+function renderAttendanceCenterChart(rows) {
+  const centers = [...groupCount(rows, "center").keys()].sort();
+  const isP = (r) => r.attendance.toLowerCase() === "present";
+  draw("attendanceCenterChart", {
+    type: "bar",
+    data: {
+      labels: centers,
+      datasets: [
+        { label: "Present", backgroundColor: "#8fc9a1", data: centers.map((c) => rows.filter((r) => (r.center || "(blank)") === c && isP(r)).length) },
+        { label: "Absent", backgroundColor: "#d29a9a", data: centers.map((c) => rows.filter((r) => (r.center || "(blank)") === c && !isP(r)).length) },
+      ],
+    },
+    options: barOpts({ x: { stacked: true }, y: { stacked: true } }, (ds, i) => {
+      const c = centers[i];
+      const want = ds === 0;
+      return {
+        title: `${c} — ${want ? "Present" : "Absent"}`,
+        records: rows.filter((r) => (r.center || "(blank)") === c && isP(r) === want),
+      };
+    }),
+  });
+}
+
+function doughnut(id, rows, key, label) {
+  const map = groupCount(rows, key);
+  const labels = [...map.keys()];
+  draw(id, {
+    type: "doughnut",
+    data: {
+      labels,
+      datasets: [{ data: labels.map((l) => map.get(l)), backgroundColor: labels.map((_, i) => PALETTE[i % PALETTE.length]), borderColor: "#fff", borderWidth: 2 }],
+    },
+    options: withPeopleTip(
+      { responsive: true, plugins: { legend: { position: "bottom", labels: { color: LABEL } } } },
+      (ds, i) => ({ title: `${label}: ${labels[i]}`, records: byField(rows, key, labels[i]) })
+    ),
+  });
+}
+function renderTypeChart(rows) { doughnut("typeChart", rows, "type", "Type"); }
+function renderModeChart(rows) { doughnut("modeChart", rows, "mode", "Mode"); }
+
+function renderTopicsChart(rows) {
+  const m = groupCount(rows, "topic");
+  const labels = [...m.keys()].sort((a, b) => m.get(b) - m.get(a)).slice(0, 10);
+  draw("topicsChart", {
+    type: "bar",
+    data: { labels, datasets: [{ label: "Records", data: labels.map((l) => m.get(l)), backgroundColor: PALETTE[3] }] },
+    options: barOpts({ root: { indexAxis: "y" }, plugins: { legend: { display: false } } },
+      (ds, i) => ({ title: `Topic: ${labels[i]}`, records: byField(rows, "topic", labels[i]) })),
+  });
+}
+
+const MATRIX_CELLS = new Map(); // "center|||desig" -> array of records
+const cellKey = (c, d) => c + "|||" + d;
+
+function renderMatrix(rows) {
+  const centers = [...new Set([...CENTERS, ...rows.map((r) => r.center)])].filter(Boolean);
+  const desigs = [...new Set([...DESIGNATIONS, ...rows.map((r) => r.designation)])].filter(Boolean);
+
+  MATRIX_CELLS.clear();
+  rows.forEach((r) => {
+    const k = cellKey(r.center, r.designation);
+    if (!MATRIX_CELLS.has(k)) MATRIX_CELLS.set(k, []);
+    MATRIX_CELLS.get(k).push(r);
+  });
+  const at = (c, d) => (MATRIX_CELLS.get(cellKey(c, d)) || []).length;
+  let max = 0;
+  centers.forEach((c) => desigs.forEach((d) => { max = Math.max(max, at(c, d)); }));
+
+  const head = `<thead><tr><th>Center \\ Designation</th>${desigs.map((d) => `<th>${escapeHtml(d)}</th>`).join("")}<th>Total</th></tr></thead>`;
+  const body = centers.map((c) => {
+    const cells = desigs.map((d) => {
+      const n = at(c, d);
+      const a = max ? n / max : 0;
+      const bg = n ? `background:rgba(63,159,196,${(0.12 + a * 0.6).toFixed(2)})` : "";
+      const cls = "cell" + (n ? "" : " empty");
+      return `<td class="${cls}" style="${bg}" data-c="${escapeAttr(c)}" data-d="${escapeAttr(d)}">${n || ""}</td>`;
+    }).join("");
+    const total = desigs.reduce((s, d) => s + at(c, d), 0);
+    return `<tr><td class="rowhead">${escapeHtml(c)}</td>${cells}<td class="total">${total}</td></tr>`;
+  }).join("");
+  const totalsRow = `<tr class="totals"><td>Total</td>${desigs.map((d) => `<td>${centers.reduce((s, c) => s + at(c, d), 0)}</td>`).join("")}<td>${rows.length}</td></tr>`;
+
+  $("matrixTable").innerHTML = head + `<tbody>${body}${totalsRow}</tbody>`;
+  $("matrixTable").querySelectorAll("td.cell").forEach((td) => {
+    td.addEventListener("click", () => {
+      if (td.classList.contains("empty")) return;
+      $("centerFilter").value = td.dataset.c;
+      $("designationFilter").value = td.dataset.d;
+      render();
+      window.scrollTo({ top: 0, behavior: "smooth" });
+    });
+    td.addEventListener("mouseenter", (e) => showCellTip(e, td, td.dataset.c, td.dataset.d));
+    td.addEventListener("mouseleave", scheduleHideCellTip);
+  });
+}
+
+/* ------------------------------------------------------------------ */
+/*  Shared "who is behind this number" hover card                      */
+/* ------------------------------------------------------------------ */
+let cellTipTimer = null;
+
+function cellTipEl() {
+  let el = $("cellTip");
+  if (!el) {
+    el = document.createElement("div");
+    el.id = "cellTip";
+    el.hidden = true;
+    // let the pointer move into the card to scroll a long list
+    el.addEventListener("mouseenter", () => clearTimeout(cellTipTimer));
+    el.addEventListener("mouseleave", hideCellTip);
+    document.body.appendChild(el);
+  }
+  return el;
+}
+
+function scheduleHideCellTip() {
+  clearTimeout(cellTipTimer);
+  cellTipTimer = setTimeout(hideCellTip, 220);
+}
+
+function hideCellTip() {
+  clearTimeout(cellTipTimer);
+  const el = $("cellTip");
+  if (el) { el.hidden = true; el.dataset.key = ""; }
+}
+
+// build the grouped-by-person body used by every hover card
+function peopleCardHTML(title, records, footer) {
+  if (!records || !records.length) {
+    return `<div class="ct-head">${escapeHtml(title)}</div>` +
+      `<div class="ct-empty">No matching training records.</div>`;
+  }
+  const recs = records.slice().sort((a, b) => (b.date || 0) - (a.date || 0));
+  const byPerson = new Map();
+  recs.forEach((r) => {
+    if (!byPerson.has(r.name)) byPerson.set(r.name, []);
+    byPerson.get(r.name).push(r);
+  });
+  const people = [...byPerson.entries()].map(([name, list]) => {
+    const desig = list[0].designation || "—";
+    const center = [...new Set(list.map((r) => r.center).filter(Boolean))].join(", ");
+    const items = list.map((r) =>
+      `<li><span class="ct-topic">${escapeHtml(r.topic || "—")}</span>` +
+      `<span class="ct-meta">${fmtDate(r.date)} · ${escapeHtml(r.attendance)}` +
+      `${r.mode ? " · " + escapeHtml(r.mode) : ""}</span></li>`
+    ).join("");
+    return `<div class="ct-person"><div class="ct-name">${escapeHtml(name)} ` +
+      `<span class="ct-desig">${escapeHtml(desig)}</span>` +
+      `${center ? `<span class="ct-desig ct-loc">${escapeHtml(center)}</span>` : ""}` +
+      `<span class="ct-count">${list.length} session${list.length === 1 ? "" : "s"}</span></div>` +
+      `<ul>${items}</ul></div>`;
+  }).join("");
+  return `<div class="ct-head">${escapeHtml(title)} ` +
+    `<span class="ct-total">${byPerson.size} ${byPerson.size === 1 ? "person" : "people"} · ${recs.length} records</span></div>` +
+    people +
+    (footer ? `<div class="ct-foot">${escapeHtml(footer)}</div>` : "");
+}
+
+// position the card beside an on-screen rectangle (a table cell, or a point on a chart)
+function placeCard(el, rect) {
+  const pad = 10;
+  const w = el.offsetWidth;
+  const h = el.offsetHeight;
+  let x = rect.right + pad;
+  if (x + w > window.innerWidth - 8) x = rect.left - w - pad;
+  if (x < 8) x = Math.max(8, (window.innerWidth - w) / 2);
+  let y = rect.top;
+  if (y + h > window.innerHeight - 8) y = window.innerHeight - h - 8;
+  el.style.left = Math.round(x) + "px";
+  el.style.top = Math.round(Math.max(8, y)) + "px";
+}
+
+function openCard(key, html, rect) {
+  const el = cellTipEl();
+  clearTimeout(cellTipTimer);
+  if (el.dataset.key === key && !el.hidden) return; // already showing this one
+  el.dataset.key = key;
+  el.innerHTML = html;
+  el.hidden = false;
+  placeCard(el, rect);
+}
+
+/* ---- matrix cell hover ---- */
+function showCellTip(e, td, center, desig) {
+  const recs = MATRIX_CELLS.get(cellKey(center, desig)) || [];
+  const html = recs.length
+    ? peopleCardHTML(`${desig} · ${center}`, recs, "Click the cell to filter the dashboard to this group")
+    : `<div class="ct-head">${escapeHtml(desig)} · ${escapeHtml(center)}</div>` +
+      `<div class="ct-empty">No training recorded for this role at this center.</div>`;
+  openCard("cell:" + center + "|" + desig, html, td.getBoundingClientRect());
+}
+
+/* ---- generic chart hover: reuse the same card on any Chart.js chart ---- */
+// recordsFor(dsIndex, index, chart) -> { title, records, footer }
+function peopleTooltipHandler(recordsFor) {
+  return (ctx) => {
+    const { chart, tooltip } = ctx;
+    if (!tooltip || tooltip.opacity === 0) { scheduleHideCellTip(); return; }
+    const dp = tooltip.dataPoints && tooltip.dataPoints[0];
+    if (!dp) return;
+    const info = recordsFor(dp.datasetIndex, dp.dataIndex, chart) || {};
+    const key = `${chart.canvas.id}:${dp.datasetIndex}:${dp.dataIndex}`;
+    const canvasRect = chart.canvas.getBoundingClientRect();
+    const px = canvasRect.left + tooltip.caretX;
+    const py = canvasRect.top + tooltip.caretY;
+    openCard(key, peopleCardHTML(info.title || "", info.records || [], info.footer), {
+      left: px, right: px, top: py, bottom: py,
+    });
+  };
+}
+
+// attach the handler to a chart config's tooltip (disables the native bubble)
+function withPeopleTip(options, recordsFor) {
+  options.plugins = options.plugins || {};
+  options.plugins.tooltip = Object.assign({}, options.plugins.tooltip, {
+    enabled: false,
+    external: peopleTooltipHandler(recordsFor),
+  });
+  return options;
 }
 
 let personChart;
@@ -196,7 +474,7 @@ function renderPersonPanel(rows) {
         backgroundColor: PALETTE[0],
       }],
     },
-    options: {
+    options: withPeopleTip({
       indexAxis: "y",
       responsive: true,
       scales: {
@@ -204,7 +482,10 @@ function renderPersonPanel(rows) {
         y: { ticks: { color: TICK }, grid: { color: GRID } },
       },
       plugins: { legend: { labels: { color: LABEL } } },
-    },
+    }, (ds, i) => ({
+      title: `Topic: ${labels[i]}`,
+      records: rows.filter((r) => (r.topic || "(blank)") === labels[i]),
+    })),
   });
 }
 
@@ -248,14 +529,20 @@ function renderMainChart(rows) {
   mainChart = new Chart($("mainChart"), {
     type: "bar",
     data: { labels: primaries, datasets },
-    options: {
+    options: withPeopleTip({
       responsive: true,
       scales: {
         x: { stacked: true, ticks: { color: TICK }, grid: { color: GRID } },
         y: { stacked: true, ticks: { color: TICK }, grid: { color: GRID }, beginAtZero: true },
       },
       plugins: { legend: { labels: { color: LABEL } } },
-    },
+    }, (ds, i) => {
+      const p = primaries[i], s = stacks[ds];
+      return {
+        title: `${p} · ${s}`,
+        records: rows.filter((r) => (r[primaryKey] || "(blank)") === p && (r[stackKey] || "(blank)") === s),
+      };
+    }),
   });
 }
 
@@ -267,6 +554,7 @@ function renderTimeChart(rows) {
     m.set(k, (m.get(k) || 0) + 1);
   });
   const labels = [...m.keys()].sort();
+  const monthOf = (r) => r.date ? `${r.date.getFullYear()}-${String(r.date.getMonth() + 1).padStart(2, "0")}` : "";
   timeChart && timeChart.destroy();
   timeChart = new Chart($("timeChart"), {
     type: "line",
@@ -281,14 +569,17 @@ function renderTimeChart(rows) {
         tension: 0.3,
       }],
     },
-    options: {
+    options: withPeopleTip({
       responsive: true,
       scales: {
         x: { ticks: { color: TICK }, grid: { color: GRID } },
         y: { ticks: { color: TICK }, grid: { color: GRID }, beginAtZero: true },
       },
       plugins: { legend: { labels: { color: LABEL } } },
-    },
+    }, (ds, i) => ({
+      title: `Trainings in ${labels[i]}`,
+      records: rows.filter((r) => monthOf(r) === labels[i]),
+    })),
   });
 }
 

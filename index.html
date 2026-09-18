@@ -97,6 +97,43 @@
   <canvas id="timeChart"></canvas>
 </section>
 
+<section class="grid-charts">
+  <div class="chart-wrap">
+    <h2>People trained per center</h2>
+    <p class="hint">Distinct people who have at least one record.</p>
+    <canvas id="peopleCenterChart"></canvas>
+  </div>
+  <div class="chart-wrap">
+    <h2>People trained per designation</h2>
+    <p class="hint">Distinct people by role.</p>
+    <canvas id="peopleDesigChart"></canvas>
+  </div>
+  <div class="chart-wrap">
+    <h2>Present vs absent by center</h2>
+    <canvas id="attendanceCenterChart"></canvas>
+  </div>
+  <div class="chart-wrap">
+    <h2>Type of training</h2>
+    <canvas id="typeChart"></canvas>
+  </div>
+  <div class="chart-wrap">
+    <h2>Training mode</h2>
+    <canvas id="modeChart"></canvas>
+  </div>
+  <div class="chart-wrap">
+    <h2>Top training topics</h2>
+    <canvas id="topicsChart"></canvas>
+  </div>
+</section>
+
+<section class="table-wrap">
+  <h2>Center × Designation — session count</h2>
+  <p class="hint">Darker cell = more training records for that role at that center. <strong>Hover a cell</strong> to see who is behind the number (name, designation, topic, date). <strong>Click</strong> to filter the dashboard to it.</p>
+  <div class="table-scroll">
+    <table id="matrixTable"></table>
+  </div>
+</section>
+
 <section class="table-wrap">
   <h2>Attendance detail <small id="tableCount"></small></h2>
   <p class="hint">Who attended which training session and when — filtered by your selections above.</p>
