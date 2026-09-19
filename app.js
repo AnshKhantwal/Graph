@@ -3,13 +3,25 @@
 /* ------------------------------------------------------------------ */
 /*  Config                                                             */
 /* ------------------------------------------------------------------ */
-const SHEET_ID = "1AeH_0IxlJuO00DU58EyAhTQdymOvjyNLrwnc9Ol3Who";
-// gviz endpoint works when the sheet is shared as "Anyone with the link can view".
-const GVIZ_URL =
-  `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:json`;
+const SHEET_ID = "1fkvVtIrb2o47ludvFH-O7lcyEANrFIS4HXWFbPAagP8";
 
-const CENTERS = ["Durgapuri", "Shahdara", "Mayur Vihar", "Keshav Puram", "Uttam Nagar", "Tigri", "Head Office"];
-const DESIGNATIONS = ["Manager", "Reception", "Billing", "Pharmacy", "Lab Technician", "Counsellor", "Patient Coordinator", "Call Center", "Marketing", "Doctor Assistant", "Other"];
+// One entry per center tab. "gid" is the number after #gid= in that tab's URL.
+// TODO: Durgapuri and Head Office don't have a tab/gid yet — add them here once you have the link.
+const CENTER_SHEETS = [
+  { name: "Shahdara", gid: "274553614" },
+  { name: "Tigri", gid: "1856402156" },
+  { name: "Uttam Nagar", gid: "1805107180" },
+  { name: "Keshav Puram", gid: "150450486" },
+  { name: "Mayur Vihar", gid: "1101218141" },
+];
+
+const gvizUrl = (gid) =>
+  `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:json&gid=${gid}`;
+
+// Fixed column layout shared by every center tab (0-indexed):
+// A s.no | B training type | C training modules | D training date |
+// E center name | F designation | G name | H training done | I training not done | J training mode
+const COL = { TYPE: 1, MODULES: 2, DATES: 3, DESIGNATION: 5, NAME: 6, DONE: 7, NOTDONE: 8, MODE: 9 };
 
 // soft palette on a light background
 const PALETTE = ["#7fbfd8", "#a99fd4", "#dc9dc0", "#e0c07f", "#8fc9a1", "#e0a97e", "#84c4c0", "#d29a9a", "#b6a4d6", "#a6b2c6", "#93c7bc"];
@@ -20,83 +32,362 @@ const LABEL = "#2b3648";
 /* ------------------------------------------------------------------ */
 /*  State                                                              */
 /* ------------------------------------------------------------------ */
-let RECORDS = [];          // normalised rows
+let RECORDS = [];          // flattened: one row per matched training-done/not-done item
 let sortKey = "date";
 let sortDir = -1;          // -1 = desc
-let mainChart, timeChart;
+let peopleSortKey = "total";
+let peopleSortDir = -1;    // -1 = desc
+let timeChart;
+
+// Consistent color per training type, used everywhere a type is shown
+// (the type chart, the People table chips, the dot in the training log).
+let TYPE_COLORS = new Map();
+function buildTypeColors() {
+  const types = [...new Set(RECORDS.map((r) => r.type))].filter(Boolean).sort();
+  TYPE_COLORS = new Map(types.map((t, i) => [t, PALETTE[i % PALETTE.length]]));
+}
+function typeColor(t) {
+  return TYPE_COLORS.get(t) || "#9aa5b8";
+}
 
 /* ------------------------------------------------------------------ */
-/*  Fetch + parse                                                      */
+/*  Fetch                                                              */
+/* ------------------------------------------------------------------ */
+async function fetchSheetRows(gid) {
+  const res = await fetch(gvizUrl(gid), { cache: "no-store" });
+  const text = await res.text();
+  const json = JSON.parse(text.replace(/^[\s\S]*?setResponse\(/, "").replace(/\);?\s*$/, ""));
+  return (json.table.rows || []).map((r) =>
+    (r.c || []).map((cell) => (cell && cell.v != null ? String(cell.v) : ""))
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/*  Parsing: turn one center's raw rows into a catalog + person list   */
+/* ------------------------------------------------------------------ */
+function stripNumbering(s) {
+  return String(s || "").replace(/^\s*\d+\.\s*/, "").trim();
+}
+function splitLines(raw) {
+  return String(raw || "").split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
+}
+function parseDMY(s) {
+  if (!s) return null;
+  const m = String(s).trim().match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+  if (!m) return null;
+  const d = new Date(+m[3], +m[2] - 1, +m[1]);
+  return isNaN(d) ? null : d;
+}
+
+// A "catalog row" is any row where the training-type column is filled in.
+// It defines a training type plus its ordered modules and matching dates.
+// A "person row" is any row where the name column is filled in.
+function parseCenterSheet(rows, centerName) {
+  const catalog = [];
+  const persons = [];
+  rows.forEach((r) => {
+    const type = (r[COL.TYPE] || "").trim();
+    const designation = (r[COL.DESIGNATION] || "").trim();
+    const name = (r[COL.NAME] || "").trim();
+    const mode = (r[COL.MODE] || "").trim();
+    const doneRaw = r[COL.DONE] || "";
+    const notdoneRaw = r[COL.NOTDONE] || "";
+
+    if (type) {
+      const modules = splitLines(r[COL.MODULES]).map(stripNumbering);
+      const dates = splitLines(r[COL.DATES]);
+      catalog.push({
+        type,
+        modules: modules.map((m, i) => ({ name: m, date: parseDMY(dates[i]) })),
+      });
+    }
+    if (name) {
+      persons.push({ center: centerName, designation, name, doneRaw, notdoneRaw, mode });
+    }
+  });
+  return { catalog, persons };
+}
+
+/* ------------------------------------------------------------------ */
+/*  Merge every center's catalog into one master catalog               */
+/* ------------------------------------------------------------------ */
+function normalize(s) {
+  return String(s || "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim().replace(/\s+/g, " ");
+}
+
+function titleCase(s) {
+  return String(s || "").toLowerCase().replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+// Levenshtein similarity ratio (0..1). Used to catch typos like "managar" vs
+// "manager" without a hand-maintained list of every possible misspelling.
+function similarity(a, b) {
+  a = normalize(a); b = normalize(b);
+  if (!a || !b) return 0;
+  if (a === b) return 1;
+  const m = a.length, n = b.length;
+  const dp = Array.from({ length: m + 1 }, (_, i) => [i, ...Array(n).fill(0)]);
+  for (let j = 0; j <= n; j++) dp[0][j] = j;
+  for (let i = 1; i <= m; i++) {
+    for (let j = 1; j <= n; j++) {
+      dp[i][j] = a[i - 1] === b[j - 1]
+        ? dp[i - 1][j - 1]
+        : 1 + Math.min(dp[i - 1][j], dp[i][j - 1], dp[i - 1][j - 1]);
+    }
+  }
+  return 1 - dp[m][n] / Math.max(m, n);
+}
+
+/* ---- Designation canonicalization ---- */
+// Known roles. If a raw value is close enough to one of these (typos like
+// "managar"), it's remapped so it isn't counted as a separate role.
+const DESIGNATION_DICTIONARY = [
+  "Manager", "Reception", "Billing", "Pharmacy", "Lab Technician", "Counsellor",
+  "Patient Coordinator", "Call Center", "Marketing", "Doctor", "Doctor Assistant",
+  "Nurse", "Other",
+];
+const designationCache = new Map();
+function canonicalizeDesignation(raw) {
+  const key = normalize(raw);
+  if (!key) return "";
+  if (designationCache.has(key)) return designationCache.get(key);
+  let best = null, bestScore = 0;
+  DESIGNATION_DICTIONARY.forEach((d) => {
+    const s = similarity(key, normalize(d));
+    if (s > bestScore) { bestScore = s; best = d; }
+  });
+  const result = bestScore >= 0.72 ? best : titleCase(raw);
+  designationCache.set(key, result);
+  return result;
+}
+
+/* ---- Training mode canonicalization ---- */
+// Keyword-based rather than edit-distance: "online" and "online training" are
+// not a typo of each other, they're just different phrasings of the same thing.
+function canonicalizeMode(raw) {
+  const n = normalize(raw);
+  if (!n) return "";
+  if (n.includes("online")) return "Online";
+  if (n.includes("hybrid")) return "Hybrid";
+  if (n.includes("offline") || n.includes("in person") || n.includes("onsite") || n.includes("on site") || n.includes("physical")) return "Offline / In-person";
+  if (n.includes("class")) return "Classroom";
+  return titleCase(raw);
+}
+
+/* ---- Uncatalogued free-text label clustering ---- */
+// Items in "training done"/"not done" that don't match any known type or
+// module (e.g. a program that has no catalog row yet). Different centers may
+// type the same program name slightly differently ("TB/DIABETES PROGRAMME"
+// vs "TB DIABETES PROGRAM ") — cluster near-identical labels into one so they
+// don't fragment into look-alike duplicate rows/categories.
+function makeUncatalogueClusterer() {
+  const seen = []; // [{ norm, canonical }]
+  return function canonicalizeUncatalogued(label) {
+    const n = normalize(label);
+    if (!n) return label;
+    for (const s of seen) {
+      if (s.norm === n || similarity(s.norm, n) >= 0.85) return s.canonical;
+    }
+    const canonical = String(label).trim();
+    seen.push({ norm: n, canonical });
+    return canonical;
+  };
+}
+
+function mergeCatalogs(perCenterCatalogs) {
+  const byType = new Map(); // normalized type -> { type, modulesByKey: Map }
+  perCenterCatalogs.forEach((catalog) => {
+    catalog.forEach(({ type, modules }) => {
+      const key = normalize(type);
+      if (!key) return;
+      if (!byType.has(key)) byType.set(key, { type, modulesByKey: new Map() });
+      const entry = byType.get(key);
+      modules.forEach((m) => {
+        const mk = normalize(m.name);
+        if (!mk) return;
+        const existing = entry.modulesByKey.get(mk);
+        if (!existing || (!existing.date && m.date)) entry.modulesByKey.set(mk, m);
+      });
+    });
+  });
+  const merged = [...byType.values()].map((e) => ({ type: e.type, modules: [...e.modulesByKey.values()] }));
+  // longer/more specific type names are checked first when matching free text
+  merged.sort((a, b) => normalize(b.type).length - normalize(a.type).length);
+  return merged;
+}
+
+/* ------------------------------------------------------------------ */
+/*  Match free-text "training done" / "training not done" cells        */
+/*  against the master catalog using normalized substring matching.    */
+/*  This copes with commas, newlines, no separator at all, and minor   */
+/*  typos, as long as the core phrase matches what's typed elsewhere   */
+/*  on the same sheet (see the parsing notes shared with the user).    */
+/* ------------------------------------------------------------------ */
+function matchField(raw, masterCatalog) {
+  if (!raw) return [];
+  const segments = String(raw).split(/[\n,]+/).map((s) => s.trim()).filter(Boolean);
+  const results = [];
+  segments.forEach((seg) => {
+    let work = normalize(seg);
+    let consumed = false;
+    const matchedTypes = new Set();
+
+    // Pass 1: whole training-type matches (a segment can contain more than one,
+    // e.g. "cps upgrade moduls training" with no separator between them).
+    masterCatalog.forEach((t) => {
+      const nt = normalize(t.type);
+      if (nt && work.includes(nt)) {
+        results.push({ kind: "type", type: t.type, modules: t.modules });
+        work = work.split(nt).join(" ");
+        consumed = true;
+        matchedTypes.add(t.type);
+      }
+    });
+
+    // Pass 2: individual module matches, for types not already fully matched above.
+    masterCatalog.forEach((t) => {
+      if (matchedTypes.has(t.type)) return;
+      [...t.modules].sort((a, b) => normalize(b.name).length - normalize(a.name).length).forEach((m) => {
+        const nm = normalize(m.name);
+        if (nm && nm.length > 3 && work.includes(nm)) {
+          results.push({ kind: "module", type: t.type, module: m });
+          work = work.split(nm).join(" ");
+          consumed = true;
+        }
+      });
+    });
+
+    // Nothing in the catalog matched this segment — keep it visible rather than
+    // silently dropping it (e.g. a training program that has no catalog row yet).
+    if (!consumed) results.push({ kind: "raw", label: seg });
+  });
+  return results;
+}
+
+// A training type is all-or-partial-complete, not "one row per mention":
+// - If the whole type name is written in the done column, every module of
+//   that type is Done (even ones never individually mentioned).
+// - If the whole type name is written in the not-done column (and not also
+//   fully done), every module is Not done.
+// - If only some individual modules are named, those named ones take their
+//   named status, and every OTHER module of that same type defaults to
+//   Not done — naming a few modules means the rest are still pending, not
+//   that they never happened.
+function expandPersonType(type, masterCatalog, info, personBase, out) {
+  const entry = masterCatalog.find((t) => t.type === type);
+  const modules = entry ? entry.modules : [];
+  if (!modules.length) {
+    out.push({ ...personBase, type, topic: type, date: null, status: info.allDone ? "Done" : "Not done" });
+    return;
+  }
+  modules.forEach((mod) => {
+    // Explicitly done, or the whole type was marked done → Done.
+    // Everything else (explicit not-done mention, or simply never
+    // mentioned) defaults to Not done: naming only some modules means
+    // the rest are still pending, not that they never happened.
+    const status = info.allDone || info.doneSet.has(normalize(mod.name)) ? "Done" : "Not done";
+    out.push({ ...personBase, type, topic: mod.name, date: mod.date, status });
+  });
+}
+
+function buildPersonRecords(doneRaw, notdoneRaw, masterCatalog, personBase, canonicalizeUncatalogued) {
+  const typeInfo = new Map();
+  const infoFor = (t) => {
+    if (!typeInfo.has(t)) typeInfo.set(t, { doneSet: new Set(), allDone: false });
+    return typeInfo.get(t);
+  };
+
+  const out = [];
+
+  matchField(doneRaw, masterCatalog).forEach((m) => {
+    if (m.kind === "type") {
+      if (m.modules.length) infoFor(m.type).allDone = true;
+      else out.push({ ...personBase, type: m.type, topic: m.type, date: null, status: "Done" });
+    } else if (m.kind === "module") {
+      infoFor(m.type).doneSet.add(normalize(m.module.name));
+    } else {
+      out.push({ ...personBase, type: "Uncatalogued", topic: canonicalizeUncatalogued(m.label), date: null, status: "Done" });
+    }
+  });
+
+  matchField(notdoneRaw, masterCatalog).forEach((m) => {
+    if (m.kind === "type") {
+      if (!m.modules.length) out.push({ ...personBase, type: m.type, topic: m.type, date: null, status: "Not done" });
+      else infoFor(m.type); // ensure the type still expands even if never mentioned as done
+    } else if (m.kind === "module") {
+      infoFor(m.type); // named module already defaults to Not done unless it's in doneSet
+    } else {
+      out.push({ ...personBase, type: "Uncatalogued", topic: canonicalizeUncatalogued(m.label), date: null, status: "Not done" });
+    }
+  });
+
+  typeInfo.forEach((info, type) => expandPersonType(type, masterCatalog, info, personBase, out));
+
+  return out;
+}
+
+// One person's done+not-done matches can legitimately overlap (same module
+// mentioned as both, due to messy data entry) or repeat (same item typed
+// twice in one cell). Collapse to one record per (type, topic, date):
+// an explicit "Not done" always wins over "Done" for the same item, and
+// exact repeats are dropped so nothing is shown twice.
+function dedupePersonRecords(records) {
+  const byKey = new Map();
+  records.forEach((r) => {
+    const key = [r.type, r.topic, r.date ? r.date.getTime() : ""].join("|||");
+    const existing = byKey.get(key);
+    if (!existing || (existing.status === "Done" && r.status === "Not done")) {
+      byKey.set(key, r);
+    }
+  });
+  return [...byKey.values()];
+}
+
+/* ------------------------------------------------------------------ */
+/*  Load                                                                */
 /* ------------------------------------------------------------------ */
 async function loadData() {
   setStatus("Loading data…");
   try {
-    const res = await fetch(GVIZ_URL, { cache: "no-store" });
-    const text = await res.text();
-    const json = JSON.parse(text.replace(/^[\s\S]*?setResponse\(/, "").replace(/\);?\s*$/, ""));
-    RECORDS = normalise(json.table);
-    setStatus(`Loaded ${RECORDS.length} records · updated ${new Date().toLocaleString()}`);
+    const fetched = await Promise.all(
+      CENTER_SHEETS.map((c) => fetchSheetRows(c.gid).then((rows) => ({ center: c.name, rows })))
+    );
+
+    const perCenterCatalogs = [];
+    const allPersons = [];
+    fetched.forEach(({ center, rows }) => {
+      const { catalog, persons } = parseCenterSheet(rows, center);
+      perCenterCatalogs.push(catalog);
+      allPersons.push(...persons);
+    });
+
+    const masterCatalog = mergeCatalogs(perCenterCatalogs);
+    const canonicalizeUncatalogued = makeUncatalogueClusterer();
+    designationCache.clear();
+
+    RECORDS = [];
+    allPersons.forEach((p) => {
+      const base = {
+        name: titleCase(p.name),
+        center: p.center,
+        designation: canonicalizeDesignation(p.designation),
+        mode: canonicalizeMode(p.mode),
+      };
+      const personRecords = buildPersonRecords(p.doneRaw, p.notdoneRaw, masterCatalog, base, canonicalizeUncatalogued);
+      RECORDS.push(...dedupePersonRecords(personRecords));
+    });
+
+    setStatus(`Loaded ${RECORDS.length} matched records across ${CENTER_SHEETS.length} centers · updated ${new Date().toLocaleString()}`);
+    buildTypeColors();
     buildFilterOptions();
     render();
   } catch (err) {
     console.error(err);
     setStatus(
-      "Could not load the sheet. Make sure it is shared as “Anyone with the link – Viewer”, " +
-      "or File → Share → Publish to web. (" + err.message + ")",
+      "Could not load one or more sheet tabs. Make sure the sheet is shared as “Anyone with the link – Viewer”. (" + err.message + ")",
       true
     );
   }
-}
-
-// map fuzzy header text -> canonical key
-function headerKey(label) {
-  const l = String(label || "").toLowerCase().trim();
-  if (l.includes("timestamp")) return "timestamp";
-  if (l === "date" || l.includes("date")) return "date";
-  if (l.includes("mode")) return "mode";
-  if (l.includes("material") || l.includes("shared")) return "shared";
-  if (l.includes("center") || l.includes("centre")) return "center";
-  if (l.includes("designation")) return "designation";
-  if (l.includes("attendance")) return "attendance";
-  if (l.includes("topic") && (l.includes("cord") || l.includes("code"))) return "topicCode";
-  if (l.includes("type")) return "type";
-  if (l.includes("topic")) return "topic";
-  if (l === "name" || l.includes("name")) return "name";
-  return "col_" + l.replace(/\W+/g, "_");
-}
-
-function cellDate(cell) {
-  if (!cell) return null;
-  if (cell.f && /\d/.test(cell.f)) {
-    // f like "02/09/2026" (dd/mm/yyyy)
-    const m = cell.f.match(/(\d{1,2})\/(\d{1,2})\/(\d{4})/);
-    if (m) return new Date(+m[3], +m[2] - 1, +m[1]);
-  }
-  if (typeof cell.v === "string") {
-    const m = cell.v.match(/Date\((\d+),(\d+),(\d+)/);
-    if (m) return new Date(+m[1], +m[2], +m[3]);
-  }
-  const d = new Date(cell.v);
-  return isNaN(d) ? null : d;
-}
-
-function normalise(table) {
-  const keys = table.cols.map((c) => headerKey(c.label));
-  return table.rows.map((r) => {
-    const o = {};
-    (r.c || []).forEach((cell, i) => {
-      const k = keys[i];
-      if (k === "date" || k === "timestamp") {
-        o[k] = cellDate(cell);
-      } else {
-        o[k] = cell && cell.v != null ? String(cell.v).trim() : "";
-      }
-    });
-    if (!o.date && o.timestamp) o.date = o.timestamp;
-    o.name = o.name || "(no name)";
-    o.attendance = o.attendance || "Present";
-    return o;
-  }).filter((o) => o.center || o.designation || o.topic);
 }
 
 /* ------------------------------------------------------------------ */
@@ -116,11 +407,9 @@ function uniqueSorted(key) {
 }
 
 function buildFilterOptions() {
-  // prefer the canonical lists, but include anything extra seen in the data
-  const centers = [...new Set([...CENTERS, ...uniqueSorted("center")])];
-  const desigs = [...new Set([...DESIGNATIONS, ...uniqueSorted("designation")])];
+  const centers = [...new Set([...CENTER_SHEETS.map((c) => c.name), ...uniqueSorted("center")])];
   fillSelect($("centerFilter"), centers, "All centers");
-  fillSelect($("designationFilter"), desigs, "All designations");
+  fillSelect($("designationFilter"), uniqueSorted("designation"), "All designations");
   fillSelect($("topicFilter"), uniqueSorted("topic"), "All topics");
   fillSelect($("typeFilter"), uniqueSorted("type"), "All types");
   fillSelect($("personFilter"), uniqueSorted("name"), "All people");
@@ -133,7 +422,7 @@ function currentFilters() {
     designation: $("designationFilter").value,
     topic: $("topicFilter").value,
     type: $("typeFilter").value,
-    attendance: $("attendanceFilter").value,
+    status: $("statusFilter").value,
     from: $("fromDate").value ? new Date($("fromDate").value) : null,
     to: $("toDate").value ? new Date($("toDate").value + "T23:59:59") : null,
   };
@@ -147,7 +436,7 @@ function applyFilters() {
     if (f.designation && r.designation !== f.designation) return false;
     if (f.topic && r.topic !== f.topic) return false;
     if (f.type && r.type !== f.type) return false;
-    if (f.attendance && r.attendance.toLowerCase() !== f.attendance.toLowerCase()) return false;
+    if (f.status && r.status !== f.status) return false;
     if (f.from && (!r.date || r.date < f.from)) return false;
     if (f.to && (!r.date || r.date > f.to)) return false;
     return true;
@@ -159,21 +448,94 @@ function applyFilters() {
 /* ------------------------------------------------------------------ */
 function render() {
   const rows = applyFilters();
-  const personMode = $("viewMode").value === "person";
+  const personMode = !!$("personFilter").value;
   $("personPanel").hidden = !personMode;
-  document.querySelector(".chart-wrap").hidden = personMode;
+  $("overviewCharts").hidden = personMode;
 
   renderKpis(rows);
   if (personMode) renderPersonPanel(rows);
-  else renderMainChart(rows);
+  renderPeopleTable(rows);
   renderTimeChart(rows);
   renderPeopleCharts(rows);
   renderAttendanceCenterChart(rows);
+  renderAttendanceDesigChart(rows);
   renderTypeChart(rows);
+  renderTypeLegend();
   renderModeChart(rows);
   renderTopicsChart(rows);
   renderMatrix(rows);
   renderTable(rows);
+}
+
+/* ------------------------------------------------------------------ */
+/*  People overview: one row per person, with a total training count   */
+/*  instead of one row per record.                                     */
+/* ------------------------------------------------------------------ */
+function aggregateByPerson(rows) {
+  const m = new Map();
+  rows.forEach((r) => {
+    if (!m.has(r.name)) {
+      m.set(r.name, {
+        name: r.name, centers: new Set(), designations: new Set(),
+        total: 0, done: 0, notdone: 0, types: new Map(),
+      });
+    }
+    const p = m.get(r.name);
+    if (r.center) p.centers.add(r.center);
+    if (r.designation) p.designations.add(r.designation);
+    p.total += 1;
+    if (r.status === "Done") p.done += 1; else p.notdone += 1;
+    p.types.set(r.type, (p.types.get(r.type) || 0) + 1);
+  });
+  return [...m.values()].map((p) => ({
+    ...p,
+    center: [...p.centers].join(", "),
+    designation: [...p.designations].join(", "),
+    rate: p.total ? Math.round((p.done / p.total) * 100) : 0,
+  }));
+}
+
+function renderPeopleTable(rows) {
+  const people = aggregateByPerson(rows);
+  people.sort((a, b) => {
+    let av = a[peopleSortKey], bv = b[peopleSortKey];
+    if (typeof av === "string") { av = av.toLowerCase(); bv = String(bv).toLowerCase(); }
+    return av < bv ? peopleSortDir : av > bv ? -peopleSortDir : 0;
+  });
+
+  $("peopleCount").textContent = `(${people.length} ${people.length === 1 ? "person" : "people"})`;
+  $("peopleTable").querySelector("tbody").innerHTML = people.map((p) => {
+    const typeChips = [...p.types.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .map(([t, n]) => `<span class="chip" style="background:${typeColor(t)}22;color:${typeColor(t)}"><span class="chip-dot" style="background:${typeColor(t)}"></span>${escapeHtml(t)} · ${n}</span>`)
+      .join("");
+    return `<tr data-name="${escapeAttr(p.name)}">
+      <td class="rowhead">${escapeHtml(p.name)}</td>
+      <td>${escapeHtml(p.center)}</td>
+      <td>${escapeHtml(p.designation)}</td>
+      <td>${p.total}</td>
+      <td>${p.done}</td>
+      <td>${p.notdone}</td>
+      <td>${p.rate}%</td>
+      <td class="chips">${typeChips}</td>
+    </tr>`;
+  }).join("");
+
+  $("peopleTable").querySelectorAll("tbody tr").forEach((tr) => {
+    tr.addEventListener("click", () => {
+      $("personFilter").value = tr.dataset.name;
+      render();
+      window.scrollTo({ top: 0, behavior: "smooth" });
+    });
+  });
+}
+
+function renderTypeLegend() {
+  const el = $("typeLegend");
+  if (!el) return;
+  el.innerHTML = [...TYPE_COLORS.entries()].map(([t, c]) =>
+    `<span class="legend-item"><span class="legend-dot" style="background:${c}"></span>${escapeHtml(t)}</span>`
+  ).join("");
 }
 
 const CHARTS = {};
@@ -226,37 +588,42 @@ function renderPeopleCharts(rows) {
   });
 }
 
-function renderAttendanceCenterChart(rows) {
-  const centers = [...groupCount(rows, "center").keys()].sort();
-  const isP = (r) => r.attendance.toLowerCase() === "present";
-  draw("attendanceCenterChart", {
+// Simple two-color (Done / Not done) stacked bar, grouped by whichever
+// field is passed in — this is the primary "distinguish by X" chart.
+function renderStatusChart(id, rows, key) {
+  const labels = [...groupCount(rows, key).keys()].sort();
+  const isDone = (r) => r.status === "Done";
+  draw(id, {
     type: "bar",
     data: {
-      labels: centers,
+      labels,
       datasets: [
-        { label: "Present", backgroundColor: "#8fc9a1", data: centers.map((c) => rows.filter((r) => (r.center || "(blank)") === c && isP(r)).length) },
-        { label: "Absent", backgroundColor: "#d29a9a", data: centers.map((c) => rows.filter((r) => (r.center || "(blank)") === c && !isP(r)).length) },
+        { label: "Done", backgroundColor: "#8fc9a1", data: labels.map((l) => rows.filter((r) => (r[key] || "(blank)") === l && isDone(r)).length) },
+        { label: "Not done", backgroundColor: "#d29a9a", data: labels.map((l) => rows.filter((r) => (r[key] || "(blank)") === l && !isDone(r)).length) },
       ],
     },
-    options: barOpts({ x: { stacked: true }, y: { stacked: true } }, (ds, i) => {
-      const c = centers[i];
+    options: barOpts({ root: { indexAxis: "y" }, x: { stacked: true }, y: { stacked: true } }, (ds, i) => {
+      const l = labels[i];
       const want = ds === 0;
       return {
-        title: `${c} — ${want ? "Present" : "Absent"}`,
-        records: rows.filter((r) => (r.center || "(blank)") === c && isP(r) === want),
+        title: `${l} — ${want ? "Done" : "Not done"}`,
+        records: rows.filter((r) => (r[key] || "(blank)") === l && isDone(r) === want),
       };
     }),
   });
 }
+function renderAttendanceCenterChart(rows) { renderStatusChart("attendanceCenterChart", rows, "center"); }
+function renderAttendanceDesigChart(rows) { renderStatusChart("attendanceDesigChart", rows, "designation"); }
 
-function doughnut(id, rows, key, label) {
+function doughnut(id, rows, key, label, colorFor) {
   const map = groupCount(rows, key);
   const labels = [...map.keys()];
+  const colors = colorFor ? labels.map(colorFor) : labels.map((_, i) => PALETTE[i % PALETTE.length]);
   draw(id, {
     type: "doughnut",
     data: {
       labels,
-      datasets: [{ data: labels.map((l) => map.get(l)), backgroundColor: labels.map((_, i) => PALETTE[i % PALETTE.length]), borderColor: "#fff", borderWidth: 2 }],
+      datasets: [{ data: labels.map((l) => map.get(l)), backgroundColor: colors, borderColor: "#fff", borderWidth: 2 }],
     },
     options: withPeopleTip(
       { responsive: true, plugins: { legend: { position: "bottom", labels: { color: LABEL } } } },
@@ -264,7 +631,7 @@ function doughnut(id, rows, key, label) {
     ),
   });
 }
-function renderTypeChart(rows) { doughnut("typeChart", rows, "type", "Type"); }
+function renderTypeChart(rows) { doughnut("typeChart", rows, "type", "Type", typeColor); }
 function renderModeChart(rows) { doughnut("modeChart", rows, "mode", "Mode"); }
 
 function renderTopicsChart(rows) {
@@ -282,8 +649,8 @@ const MATRIX_CELLS = new Map(); // "center|||desig" -> array of records
 const cellKey = (c, d) => c + "|||" + d;
 
 function renderMatrix(rows) {
-  const centers = [...new Set([...CENTERS, ...rows.map((r) => r.center)])].filter(Boolean);
-  const desigs = [...new Set([...DESIGNATIONS, ...rows.map((r) => r.designation)])].filter(Boolean);
+  const centers = [...new Set([...CENTER_SHEETS.map((c) => c.name), ...rows.map((r) => r.center)])].filter(Boolean);
+  const desigs = [...new Set(rows.map((r) => r.designation))].filter(Boolean).sort();
 
   MATRIX_CELLS.clear();
   rows.forEach((r) => {
@@ -334,7 +701,6 @@ function cellTipEl() {
     el = document.createElement("div");
     el.id = "cellTip";
     el.hidden = true;
-    // let the pointer move into the card to scroll a long list
     el.addEventListener("mouseenter", () => clearTimeout(cellTipTimer));
     el.addEventListener("mouseleave", hideCellTip);
     document.body.appendChild(el);
@@ -353,7 +719,6 @@ function hideCellTip() {
   if (el) { el.hidden = true; el.dataset.key = ""; }
 }
 
-// build the grouped-by-person body used by every hover card
 function peopleCardHTML(title, records, footer) {
   if (!records || !records.length) {
     return `<div class="ct-head">${escapeHtml(title)}</div>` +
@@ -365,27 +730,32 @@ function peopleCardHTML(title, records, footer) {
     if (!byPerson.has(r.name)) byPerson.set(r.name, []);
     byPerson.get(r.name).push(r);
   });
-  const people = [...byPerson.entries()].map(([name, list]) => {
+  const MAX_PEOPLE = 6;
+  const MAX_ITEMS = 2;
+  const shown = [...byPerson.entries()].slice(0, MAX_PEOPLE);
+  const people = shown.map(([name, list]) => {
     const desig = list[0].designation || "—";
-    const center = [...new Set(list.map((r) => r.center).filter(Boolean))].join(", ");
-    const items = list.map((r) =>
+    const visible = list.slice(0, MAX_ITEMS);
+    const items = visible.map((r) =>
       `<li><span class="ct-topic">${escapeHtml(r.topic || "—")}</span>` +
-      `<span class="ct-meta">${fmtDate(r.date)} · ${escapeHtml(r.attendance)}` +
-      `${r.mode ? " · " + escapeHtml(r.mode) : ""}</span></li>`
+      `<span class="ct-meta">${fmtDate(r.date)} · ${escapeHtml(r.status)}</span></li>`
     ).join("");
+    const more = list.length > visible.length
+      ? `<li class="ct-more">+${list.length - visible.length} more</li>` : "";
     return `<div class="ct-person"><div class="ct-name">${escapeHtml(name)} ` +
       `<span class="ct-desig">${escapeHtml(desig)}</span>` +
-      `${center ? `<span class="ct-desig ct-loc">${escapeHtml(center)}</span>` : ""}` +
-      `<span class="ct-count">${list.length} session${list.length === 1 ? "" : "s"}</span></div>` +
-      `<ul>${items}</ul></div>`;
+      `<span class="ct-count">${list.length}</span></div>` +
+      `<ul>${items}${more}</ul></div>`;
   }).join("");
+  const overflow = byPerson.size > MAX_PEOPLE
+    ? `<div class="ct-more-people">+${byPerson.size - MAX_PEOPLE} more people</div>` : "";
   return `<div class="ct-head">${escapeHtml(title)} ` +
     `<span class="ct-total">${byPerson.size} ${byPerson.size === 1 ? "person" : "people"} · ${recs.length} records</span></div>` +
     people +
+    overflow +
     (footer ? `<div class="ct-foot">${escapeHtml(footer)}</div>` : "");
 }
 
-// position the card beside an on-screen rectangle (a table cell, or a point on a chart)
 function placeCard(el, rect) {
   const pad = 10;
   const w = el.offsetWidth;
@@ -402,14 +772,13 @@ function placeCard(el, rect) {
 function openCard(key, html, rect) {
   const el = cellTipEl();
   clearTimeout(cellTipTimer);
-  if (el.dataset.key === key && !el.hidden) return; // already showing this one
+  if (el.dataset.key === key && !el.hidden) return;
   el.dataset.key = key;
   el.innerHTML = html;
   el.hidden = false;
   placeCard(el, rect);
 }
 
-/* ---- matrix cell hover ---- */
 function showCellTip(e, td, center, desig) {
   const recs = MATRIX_CELLS.get(cellKey(center, desig)) || [];
   const html = recs.length
@@ -419,8 +788,6 @@ function showCellTip(e, td, center, desig) {
   openCard("cell:" + center + "|" + desig, html, td.getBoundingClientRect());
 }
 
-/* ---- generic chart hover: reuse the same card on any Chart.js chart ---- */
-// recordsFor(dsIndex, index, chart) -> { title, records, footer }
 function peopleTooltipHandler(recordsFor) {
   return (ctx) => {
     const { chart, tooltip } = ctx;
@@ -438,7 +805,6 @@ function peopleTooltipHandler(recordsFor) {
   };
 }
 
-// attach the handler to a chart config's tooltip (disables the native bubble)
 function withPeopleTip(options, recordsFor) {
   options.plugins = options.plugins || {};
   options.plugins.tooltip = Object.assign({}, options.plugins.tooltip, {
@@ -453,13 +819,13 @@ function renderPersonPanel(rows) {
   const selected = $("personFilter").value;
   $("personName").textContent = selected || "all people (pick one in the Person filter)";
 
-  const present = rows.filter((r) => r.attendance.toLowerCase() === "present");
+  const done = rows.filter((r) => r.status === "Done");
   const topics = groupCount(rows, "topic");
   const centers = [...new Set(rows.map((r) => r.center).filter(Boolean))];
 
   $("pTrainings").textContent = rows.length;
   $("pTopics").textContent = topics.size;
-  $("pRate").textContent = rows.length ? Math.round((present.length / rows.length) * 100) + "%" : "0%";
+  $("pRate").textContent = rows.length ? Math.round((done.length / rows.length) * 100) + "%" : "0%";
   $("pCenters").textContent = centers.length ? centers.join(", ") : "–";
 
   const labels = [...topics.keys()].sort();
@@ -469,7 +835,7 @@ function renderPersonPanel(rows) {
     data: {
       labels,
       datasets: [{
-        label: "Times attended",
+        label: "Matched records",
         data: labels.map((l) => topics.get(l)),
         backgroundColor: PALETTE[0],
       }],
@@ -495,7 +861,7 @@ function renderKpis(rows) {
   $("kpiSessions").textContent = new Set(
     rows.map((r) => r.topic + "|" + (r.date ? r.date.toDateString() : ""))
   ).size;
-  $("kpiPresent").textContent = rows.filter((r) => r.attendance.toLowerCase() === "present").length;
+  $("kpiPresent").textContent = rows.filter((r) => r.status === "Done").length;
 }
 
 function groupCount(rows, key) {
@@ -505,45 +871,6 @@ function groupCount(rows, key) {
     m.set(k, (m.get(k) || 0) + 1);
   });
   return m;
-}
-
-function renderMainChart(rows) {
-  const mode = $("viewMode").value; // center | designation
-  const primaryKey = mode === "center" ? "center" : "designation";
-  const stackKey = mode === "center" ? "designation" : "center";
-  $("chartTitle").textContent =
-    `Attendance by ${primaryKey}` + ` (stacked by ${stackKey})`;
-
-  const primaries = [...groupCount(rows, primaryKey).keys()].sort();
-  const stacks = [...groupCount(rows, stackKey).keys()].sort();
-
-  const datasets = stacks.map((s, i) => ({
-    label: s,
-    backgroundColor: PALETTE[i % PALETTE.length],
-    data: primaries.map(
-      (p) => rows.filter((r) => (r[primaryKey] || "(blank)") === p && (r[stackKey] || "(blank)") === s).length
-    ),
-  }));
-
-  mainChart && mainChart.destroy();
-  mainChart = new Chart($("mainChart"), {
-    type: "bar",
-    data: { labels: primaries, datasets },
-    options: withPeopleTip({
-      responsive: true,
-      scales: {
-        x: { stacked: true, ticks: { color: TICK }, grid: { color: GRID } },
-        y: { stacked: true, ticks: { color: TICK }, grid: { color: GRID }, beginAtZero: true },
-      },
-      plugins: { legend: { labels: { color: LABEL } } },
-    }, (ds, i) => {
-      const p = primaries[i], s = stacks[ds];
-      return {
-        title: `${p} · ${s}`,
-        records: rows.filter((r) => (r[primaryKey] || "(blank)") === p && (r[stackKey] || "(blank)") === s),
-      };
-    }),
-  });
 }
 
 function renderTimeChart(rows) {
@@ -561,7 +888,7 @@ function renderTimeChart(rows) {
     data: {
       labels,
       datasets: [{
-        label: "Attendance records",
+        label: "Training records",
         data: labels.map((l) => m.get(l)),
         borderColor: "#3f9fc4",
         backgroundColor: "rgba(63,159,196,0.15)",
@@ -597,16 +924,16 @@ function renderTable(rows) {
 
   $("tableCount").textContent = `(${sorted.length})`;
   $("detailTable").querySelector("tbody").innerHTML = sorted.map((r) => {
-    const present = r.attendance.toLowerCase() === "present";
+    const done = r.status === "Done";
     return `<tr>
       <td>${fmtDate(r.date)}</td>
       <td>${escapeHtml(r.name)}</td>
       <td>${escapeHtml(r.center)}</td>
       <td>${escapeHtml(r.designation)}</td>
+      <td><span class="type-dot" style="background:${typeColor(r.type)}"></span>${escapeHtml(r.type)}</td>
       <td>${escapeHtml(r.topic)}</td>
-      <td>${escapeHtml(r.type || "")}</td>
       <td>${escapeHtml(r.mode || "")}</td>
-      <td><span class="badge ${present ? "present" : "absent"}">${escapeHtml(r.attendance)}</span></td>
+      <td><span class="badge ${done ? "done" : "notdone"}">${escapeHtml(r.status)}</span></td>
     </tr>`;
   }).join("");
 }
@@ -627,16 +954,20 @@ function escapeAttr(s) { return escapeHtml(s); }
 /* ------------------------------------------------------------------ */
 /*  Events                                                             */
 /* ------------------------------------------------------------------ */
-["viewMode", "centerFilter", "personFilter", "designationFilter", "topicFilter", "typeFilter",
- "attendanceFilter", "fromDate", "toDate"].forEach((id) =>
+["centerFilter", "personFilter", "designationFilter", "topicFilter", "typeFilter",
+ "statusFilter", "fromDate", "toDate"].forEach((id) =>
   $(id).addEventListener("change", render));
 
 $("resetBtn").addEventListener("click", () => {
-  ["centerFilter", "personFilter", "designationFilter", "topicFilter", "typeFilter", "attendanceFilter", "fromDate", "toDate"]
+  ["centerFilter", "personFilter", "designationFilter", "topicFilter", "typeFilter", "statusFilter", "fromDate", "toDate"]
     .forEach((id) => ($(id).value = ""));
   render();
 });
 $("refreshBtn").addEventListener("click", loadData);
+$("clearPersonBtn").addEventListener("click", () => {
+  $("personFilter").value = "";
+  render();
+});
 
 document.querySelectorAll("#detailTable th").forEach((th) =>
   th.addEventListener("click", () => {
@@ -644,6 +975,14 @@ document.querySelectorAll("#detailTable th").forEach((th) =>
     if (sortKey === k) sortDir *= -1;
     else { sortKey = k; sortDir = 1; }
     render();
+  }));
+
+document.querySelectorAll("#peopleTable th[data-key]").forEach((th) =>
+  th.addEventListener("click", () => {
+    const k = th.dataset.key;
+    if (peopleSortKey === k) peopleSortDir *= -1;
+    else { peopleSortKey = k; peopleSortDir = k === "name" ? 1 : -1; }
+    renderPeopleTable(applyFilters());
   }));
 
 loadData();

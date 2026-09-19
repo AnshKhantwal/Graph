@@ -14,20 +14,6 @@
 
 <section class="controls">
   <div class="field">
-    <label for="viewMode">View by</label>
-    <select id="viewMode">
-      <option value="center">Center</option>
-      <option value="designation">Designation</option>
-      <option value="person">Person</option>
-    </select>
-  </div>
-
-  <div class="field">
-    <label for="personFilter">Person</label>
-    <select id="personFilter"><option value="">All people</option></select>
-  </div>
-
-  <div class="field">
     <label for="centerFilter">Center</label>
     <select id="centerFilter"><option value="">All centers</option></select>
   </div>
@@ -38,105 +24,141 @@
   </div>
 
   <div class="field">
-    <label for="topicFilter">Training topic</label>
-    <select id="topicFilter"><option value="">All topics</option></select>
-  </div>
-
-  <div class="field">
-    <label for="typeFilter">Type of training</label>
-    <select id="typeFilter"><option value="">All types</option></select>
-  </div>
-
-  <div class="field">
-    <label for="attendanceFilter">Attendance</label>
-    <select id="attendanceFilter">
+    <label for="statusFilter">Status</label>
+    <select id="statusFilter">
       <option value="">All</option>
-      <option value="Present">Present</option>
-      <option value="Absent">Absent</option>
+      <option value="Done">Done</option>
+      <option value="Not done">Not done</option>
     </select>
-  </div>
-
-  <div class="field">
-    <label for="fromDate">From</label>
-    <input type="date" id="fromDate" />
-  </div>
-  <div class="field">
-    <label for="toDate">To</label>
-    <input type="date" id="toDate" />
   </div>
 
   <button id="resetBtn" type="button">Reset filters</button>
   <button id="refreshBtn" type="button">Refresh</button>
+
+  <details class="more-filters">
+    <summary>More filters</summary>
+    <div class="more-filters-grid">
+      <div class="field">
+        <label for="personFilter">Person</label>
+        <select id="personFilter"><option value="">All people</option></select>
+      </div>
+      <div class="field">
+        <label for="topicFilter">Training topic</label>
+        <select id="topicFilter"><option value="">All topics</option></select>
+      </div>
+      <div class="field">
+        <label for="typeFilter">Type of training</label>
+        <select id="typeFilter"><option value="">All types</option></select>
+      </div>
+      <div class="field">
+        <label for="fromDate">From</label>
+        <input type="date" id="fromDate" />
+      </div>
+      <div class="field">
+        <label for="toDate">To</label>
+        <input type="date" id="toDate" />
+      </div>
+    </div>
+  </details>
 </section>
 
 <section class="kpis">
   <div class="kpi"><span id="kpiRecords">0</span><small>Records</small></div>
   <div class="kpi"><span id="kpiPeople">0</span><small>People</small></div>
   <div class="kpi"><span id="kpiSessions">0</span><small>Distinct sessions</small></div>
-  <div class="kpi"><span id="kpiPresent">0</span><small>Present</small></div>
+  <div class="kpi"><span id="kpiPresent">0</span><small>Done</small></div>
 </section>
 
-<section class="chart-wrap">
-  <h2 id="chartTitle">Attendance by center</h2>
-  <canvas id="mainChart"></canvas>
+<section class="table-wrap" id="peopleOverviewWrap">
+  <h2>People — training summary <small id="peopleCount"></small></h2>
+  <p class="hint">One row per person (not one row per training). <strong>Click a name</strong> to filter the whole dashboard to them. The colored chips show how many trainings of each type — colors match the legend under "Type of training" below.</p>
+  <div class="table-scroll">
+    <table id="peopleTable">
+      <thead>
+        <tr>
+          <th data-key="name">Name</th>
+          <th data-key="center">Center</th>
+          <th data-key="designation">Designation</th>
+          <th data-key="total">Total trainings</th>
+          <th data-key="done">Done</th>
+          <th data-key="notdone">Not done</th>
+          <th data-key="rate">Done %</th>
+          <th>By training type</th>
+        </tr>
+      </thead>
+      <tbody></tbody>
+    </table>
+  </div>
 </section>
 
 <section class="person-wrap" id="personPanel" hidden>
-  <h2>Person profile — <span id="personName"></span></h2>
+  <h2>Person profile — <span id="personName"></span> <button id="clearPersonBtn" type="button" class="link-btn">✕ back to overview</button></h2>
   <div class="kpis">
-    <div class="kpi"><span id="pTrainings">0</span><small>Sessions attended</small></div>
+    <div class="kpi"><span id="pTrainings">0</span><small>Matched records</small></div>
     <div class="kpi"><span id="pTopics">0</span><small>Distinct topics</small></div>
-    <div class="kpi"><span id="pRate">0%</span><small>Present rate</small></div>
+    <div class="kpi"><span id="pRate">0%</span><small>Done rate</small></div>
     <div class="kpi"><span id="pCenters">–</span><small>Center(s)</small></div>
   </div>
   <canvas id="personChart"></canvas>
 </section>
 
-<section class="chart-wrap">
-  <h2>Sessions over time</h2>
-  <canvas id="timeChart"></canvas>
-</section>
-
-<section class="grid-charts">
+<section class="grid-charts grid-charts-2" id="overviewCharts">
   <div class="chart-wrap">
-    <h2>People trained per center</h2>
-    <p class="hint">Distinct people who have at least one record.</p>
-    <canvas id="peopleCenterChart"></canvas>
-  </div>
-  <div class="chart-wrap">
-    <h2>People trained per designation</h2>
-    <p class="hint">Distinct people by role.</p>
-    <canvas id="peopleDesigChart"></canvas>
-  </div>
-  <div class="chart-wrap">
-    <h2>Present vs absent by center</h2>
+    <h2>Done vs not done — by Center</h2>
     <canvas id="attendanceCenterChart"></canvas>
   </div>
   <div class="chart-wrap">
-    <h2>Type of training</h2>
-    <canvas id="typeChart"></canvas>
-  </div>
-  <div class="chart-wrap">
-    <h2>Training mode</h2>
-    <canvas id="modeChart"></canvas>
-  </div>
-  <div class="chart-wrap">
-    <h2>Top training topics</h2>
-    <canvas id="topicsChart"></canvas>
+    <h2>Done vs not done — by Designation</h2>
+    <canvas id="attendanceDesigChart"></canvas>
   </div>
 </section>
 
 <section class="table-wrap">
-  <h2>Center × Designation — session count</h2>
-  <p class="hint">Darker cell = more training records for that role at that center. <strong>Hover a cell</strong> to see who is behind the number (name, designation, topic, date). <strong>Click</strong> to filter the dashboard to it.</p>
+  <h2>Center × Designation — matched record count</h2>
+  <p class="hint">Darker cell = more matched training records for that role at that center. <strong>Hover a cell</strong> to see who is behind the number (name, designation, topic, date). <strong>Click</strong> to filter the dashboard to it.</p>
   <div class="table-scroll">
     <table id="matrixTable"></table>
   </div>
 </section>
 
-<section class="table-wrap">
-  <h2>Attendance detail <small id="tableCount"></small></h2>
-  <p class="hint">Who attended which training session and when — filtered by your selections above.</p>
+<details class="table-wrap">
+  <summary><h2 style="display:inline">More charts &amp; breakdowns</h2></summary>
+  <div class="chart-wrap">
+    <h2>Sessions over time</h2>
+    <p class="hint">Only records that matched a module with a known date are plotted here.</p>
+    <canvas id="timeChart"></canvas>
+  </div>
+  <div class="grid-charts">
+    <div class="chart-wrap">
+      <h2>People with records per center</h2>
+      <p class="hint">Distinct people who have at least one matched record.</p>
+      <canvas id="peopleCenterChart"></canvas>
+    </div>
+    <div class="chart-wrap">
+      <h2>People with records per designation</h2>
+      <p class="hint">Distinct people by role.</p>
+      <canvas id="peopleDesigChart"></canvas>
+    </div>
+    <div class="chart-wrap">
+      <h2>Type of training</h2>
+      <canvas id="typeChart"></canvas>
+      <div class="legend" id="typeLegend"></div>
+      <p class="hint">This color key is used everywhere a training type shows up: the chips in the People table, the dot next to "Training type" in the log below, and this chart.</p>
+    </div>
+    <div class="chart-wrap">
+      <h2>Training mode</h2>
+      <canvas id="modeChart"></canvas>
+    </div>
+    <div class="chart-wrap">
+      <h2>Top training topics</h2>
+      <canvas id="topicsChart"></canvas>
+    </div>
+  </div>
+</details>
+
+<details class="table-wrap">
+  <summary><h2 style="display:inline">Full training log <small id="tableCount"></small></h2></summary>
+  <p class="hint">Every matched training-done / training-not-done item, one row per module (or per uncatalogued item), filtered by your selections above. For a per-person summary, see the People table higher up.</p>
   <div class="table-scroll">
     <table id="detailTable">
       <thead>
@@ -145,19 +167,19 @@
           <th data-key="name">Name</th>
           <th data-key="center">Center</th>
           <th data-key="designation">Designation</th>
-          <th data-key="topic">Training topic</th>
-          <th data-key="type">Type</th>
+          <th data-key="type">Training type</th>
+          <th data-key="topic">Module / item</th>
           <th data-key="mode">Mode</th>
-          <th data-key="attendance">Attendance</th>
+          <th data-key="status">Status</th>
         </tr>
       </thead>
       <tbody></tbody>
     </table>
   </div>
-</section>
+</details>
 
 <footer>
-  <span>Source: Google Sheet (Forms responses). Data is read live from the published sheet.</span>
+  <span>Source: 5 center tabs of the same Google Sheet, read live via each tab's gid. "Uncatalogued" items are things mentioned in training done/not done that don't yet have a matching training-type/module row in any center's sheet.</span>
 </footer>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
