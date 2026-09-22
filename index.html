@@ -4,12 +4,17 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>MEDCROSS Training Dashboard</title>
-<link rel="stylesheet" href="styles.css" />
+<link rel="stylesheet" href="styles.css?v=9" />
 </head>
 <body>
 <header>
-  <h1>MEDCROSS Training &amp; Development Dashboard</h1>
-  <div id="status" class="status">Loading data…</div>
+  <div class="header-title">
+    <div class="header-mark">MC</div>
+    <div>
+      <h1>MEDCROSS Training &amp; Development Dashboard</h1>
+      <div id="status" class="status">Loading data…</div>
+    </div>
+  </div>
 </header>
 
 <section class="controls">
@@ -63,10 +68,47 @@
 </section>
 
 <section class="kpis">
-  <div class="kpi"><span id="kpiRecords">0</span><small>Records</small></div>
-  <div class="kpi"><span id="kpiPeople">0</span><small>People</small></div>
-  <div class="kpi"><span id="kpiSessions">0</span><small>Distinct sessions</small></div>
-  <div class="kpi"><span id="kpiPresent">0</span><small>Done</small></div>
+  <div class="kpi"><span id="kpiRecords">0</span><small>Training items</small></div>
+  <div class="kpi is-done"><span id="kpiPresent">0</span><small>Completed</small></div>
+  <div class="kpi is-open"><span id="kpiNotDone">0</span><small>Outstanding</small></div>
+  <div class="kpi"><span id="kpiPeople">0</span><small>Staff tracked</small></div>
+  <div class="kpi"><span id="kpiSessions">0</span><small>Distinct modules</small></div>
+</section>
+
+<section class="overview-strip" id="overviewStrip">
+  <div class="panel gauge-card">
+    <div class="gauge-canvas-wrap">
+      <canvas id="overallGaugeChart"></canvas>
+      <div class="gauge-value"><strong id="gaugePct">0%</strong><span>Complete</span></div>
+    </div>
+    <div class="gauge-legend">
+      <span><b id="gaugeDone">0</b> done</span>
+      <span><b id="gaugeNotDone">0</b> open</span>
+    </div>
+  </div>
+
+  <div class="panel">
+    <h2>Completion by center</h2>
+    <div class="progress-list" id="centerProgress"></div>
+  </div>
+
+  <div class="panel">
+    <h2>Completion by role</h2>
+    <div class="progress-list" id="desigProgress"></div>
+  </div>
+</section>
+
+<section class="grid-charts" id="focusRow">
+  <div class="chart-wrap">
+    <h2>Needs attention <small>lowest completion</small></h2>
+    <p class="hint">People furthest behind on their centre's training list. Click a row to open their profile.</p>
+    <div class="attn-list" id="attentionList"></div>
+  </div>
+  <div class="chart-wrap">
+    <h2>Most-missed modules</h2>
+    <p class="hint">Trainings with the most people still outstanding — the best candidates for the next session.</p>
+    <div class="progress-list" id="gapList"></div>
+  </div>
 </section>
 
 <section class="table-wrap" id="peopleOverviewWrap">
@@ -99,26 +141,16 @@
     <div class="kpi"><span id="pRate">0%</span><small>Done rate</small></div>
     <div class="kpi"><span id="pCenters">–</span><small>Center(s)</small></div>
   </div>
-  <canvas id="personChart"></canvas>
-</section>
-
-<section class="grid-charts grid-charts-2" id="overviewCharts">
-  <div class="chart-wrap">
-    <h2>Done vs not done — by Center</h2>
-    <canvas id="attendanceCenterChart"></canvas>
-  </div>
-  <div class="chart-wrap">
-    <h2>Done vs not done — by Designation</h2>
-    <canvas id="attendanceDesigChart"></canvas>
-  </div>
+  <div class="checklist-groups" id="personChecklist"></div>
 </section>
 
 <section class="table-wrap">
-  <h2>Center × Designation — matched record count</h2>
-  <p class="hint">Darker cell = more matched training records for that role at that center. <strong>Hover a cell</strong> to see who is behind the number (name, designation, topic, date). <strong>Click</strong> to filter the dashboard to it.</p>
+  <h2>Completion heatmap <small>center × role</small></h2>
+  <p class="hint">Each cell is the completion rate for that role at that centre — darker means further along. <strong>Hover</strong> to see who is behind it, <strong>click</strong> to filter the dashboard to that group.</p>
   <div class="table-scroll">
     <table id="matrixTable"></table>
   </div>
+  <div class="matrix-scale"><span>0%</span><i></i><span>100%</span></div>
 </section>
 
 <details class="table-wrap">
@@ -129,16 +161,6 @@
     <canvas id="timeChart"></canvas>
   </div>
   <div class="grid-charts">
-    <div class="chart-wrap">
-      <h2>People with records per center</h2>
-      <p class="hint">Distinct people who have at least one matched record.</p>
-      <canvas id="peopleCenterChart"></canvas>
-    </div>
-    <div class="chart-wrap">
-      <h2>People with records per designation</h2>
-      <p class="hint">Distinct people by role.</p>
-      <canvas id="peopleDesigChart"></canvas>
-    </div>
     <div class="chart-wrap">
       <h2>Type of training</h2>
       <canvas id="typeChart"></canvas>
@@ -179,10 +201,10 @@
 </details>
 
 <footer>
-  <span>Source: 5 center tabs of the same Google Sheet, read live via each tab's gid. "Uncatalogued" items are things mentioned in training done/not done that don't yet have a matching training-type/module row in any center's sheet.</span>
+  <span>Source: Google Form responses sheet, read live. Every submitted row is treated as a completed ("Done") training log entry; not-done entries are added manually to the sheet.</span>
 </footer>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
-<script src="app.js"></script>
+<script src="app.js?v=9"></script>
 </body>
 </html>
